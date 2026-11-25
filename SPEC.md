@@ -3,7 +3,7 @@
 ## 1. Descripción del proyecto
 
 **Nombre:** Wanderlust Explorer  
-**Versión:** MVP 1.1  
+**Versión:** MVP 1.2  
 **Tipo:** Aplicación web multipágina para descubrimiento y gestión de experiencias turísticas  
 
 Wanderlust Explorer es una plataforma digital que permite a los usuarios explorar, buscar, filtrar y guardar experiencias turísticas únicas alrededor del mundo. La aplicación proporciona una interfaz intuitiva, visualmente atractiva y adaptada a dispositivos móviles y de escritorio.
@@ -48,7 +48,7 @@ Visualizar y explorar el catálogo de 100 experiencias disponibles con capacidad
 
 | Requisito | Descripción | Explícito | Estado |
 |-----------|-------------|----------|--------|
-| Visualización de experiencias | Mostrar las 100 experiencias en una cuadrícula de tarjetas | ✓ | Definido |
+| Visualización de experiencias | Mostrar catálogo de 100 experiencias en cuadrícula de tarjetas paginadas en grupos de 12 | ✓ | Definido |
 | Búsqueda por título | Filtrar por término usando regex case-insensitive `/term/i` | ✓ | Definido |
 | Filtro por categoría | Permitir seleccionar cualquiera de las 5 categorías | ✓ | Definido |
 | Filtro por destino | Permitir filtrar por ciudad o país de destino | ✓ | Definido |
@@ -63,6 +63,12 @@ Visualizar y explorar el catálogo de 100 experiencias disponibles con capacidad
 - `search` (string): término de búsqueda en título
 - `category` (string): categoría seleccionada
 - `destination` (string): destino seleccionado
+- `page` (number): número de página (12 experiencias por página)
+
+**Paginación:**
+- 12 experiencias por página
+- Página inicial: 1
+- Reiniciar a página 1 al modificar búsqueda o filtros
 
 **Componentes esperados:**
 - Navbar
@@ -70,6 +76,7 @@ Visualizar y explorar el catálogo de 100 experiencias disponibles con capacidad
 - FilterBar
 - ExperienceCard (reutilizable)
 - Grid/Container para visualización
+- Controles de paginación
 
 ---
 
@@ -129,9 +136,15 @@ Presentar un perfil de usuario simulado con información agregada.
 | Requisito | Descripción | Explícito | Estado |
 |-----------|-------------|----------|--------|
 | Perfil simulado | Presentar perfil de usuario de demostración | ✓ | Definido |
-| Contador de favoritos | Mostrar número de experiencias guardadas | ✓ | Definido |
+| Atributos del perfil | id, firstName, lastName, email, avatarUrl, city, country (tipo string) | ✓ | Definido |
+| Contador de favoritos | Mostrar número de experiencias guardadas (dinámico) | ✓ | Definido |
 | Contador actualizado | El contador se sincroniza con cambios en favoritos | ✓ | Definido |
 | Navbar activa | Navbar presente indicando sección activa | ✓ | Definido |
+
+**Restricciones:**
+- No implementar autenticación
+- No permitir edición del perfil
+- Contador de favoritos se calcula del estado compartido (read-only)
 
 ---
 
@@ -172,21 +185,28 @@ Presentar un perfil de usuario simulado con información agregada.
 ### 5.1. Búsqueda por título
 
 **Requisito explícito:**
-- Utilizar expresiones regulares case-insensitive: `/term/i`
+- Utilizar expresiones regulares case-insensitive
 - Buscar coincidencias en el campo `title` de las experiencias
 - Escapar caracteres especiales del término de búsqueda antes de construir la expresión regular
+- Búsqueda case-insensitive e insensible a acentos
 
 **Comportamiento esperado:**
 - La búsqueda se aplica automáticamente mientras el usuario escribe (sin necesidad de botón de búsqueda)
 - Si se borra el término, desaparece el filtro de búsqueda
 - Puede combinarse con filtros de categoría y destino
+- NO se implementa debouncing en esta fase
 
 **Implementación requerida:**
 ```typescript
 const escapedTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const regex = new RegExp(escapedTerm, 'i');
-const matches = experience.title.match(regex) !== null;
+const normalizedTerm = escapedTerm.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const regex = new RegExp(normalizedTerm, 'i');
+const normalizedTitle = experience.title.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const matches = normalizedTitle.match(regex) !== null;
 ```
+
+**Ejemplo:**
+- Búsqueda: "playa" → coincide con "Playa", "PLAYA", "plaïa"
 
 ---
 
@@ -212,6 +232,7 @@ const matches = experience.title.match(regex) !== null;
 **Comportamiento esperado:**
 - Utiliza coincidencias parciales (búsqueda que incluya substring)
 - Case-insensitive: no distingue entre mayúsculas y minúsculas
+- Insensible a acentos: "café" coincide con "cafe", "Café", "CAFE"
 - Si se ingresa un término, solo muestra experiencias cuyo `destination` contiene ese término
 - Si se limpia el filtro, desaparece
 - Puede combinarse con búsqueda y filtro de categoría
@@ -219,17 +240,22 @@ const matches = experience.title.match(regex) !== null;
 
 **Implementación requerida:**
 ```typescript
-const destinationFilter = destination.toLowerCase();
-const matches = experience.destination.toLowerCase().includes(destinationFilter);
+const normalizedDestination = destination.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const normalizedField = experience.destination.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const matches = normalizedField.includes(normalizedDestination);
 ```
+
+**Ejemplo:**
+- Filtro: "São Paulo" → coincide con "sao paulo", "SÃO PAULO", "Sao Paulo"
 
 ---
 
-### 5.4. Combinación de filtros
+### 5.4. Combinación de filtros y ordenamiento
 
 **Requisito explícito:**
 - La búsqueda y los filtros funcionan independientemente y pueden combinarse
 - Los resultados se actualizan sin recargar completamente la página
+- Orden de operaciones: filtrado → ordenamiento → paginación
 
 **Lógica esperada:**
 ```
@@ -237,11 +263,15 @@ resultados = experiencias
   .filter(exp => buscar_en_titulo(exp, término_búsqueda))
   .filter(exp => filtrar_por_categoría(exp, categoría))
   .filter(exp => filtrar_por_destino(exp, destino))
+  .sort(ordenamiento)
+  .paginate(page, pageSize)
 ```
 
 **Comportamiento esperado:**
 - Todos los filtros se aplican con lógica AND (intersección)
 - Si algún filtro está vacío, se omite de la evaluación
+- Ordenamiento por defecto: rating descendente
+- Resolver empates mediante orden alfabético por título
 
 ---
 
@@ -268,10 +298,22 @@ resultados = experiencias
 | `search` | string | Término de búsqueda en título | No |
 | `category` | string | Categoría seleccionada | No |
 | `destination` | string | Destino seleccionado | No |
+| `page` | number | Número de página | No (default: 1) |
+| `sort` | string | Criterio de ordenamiento | No (default: rating-desc) |
+
+**Valores válidos para `sort`:**
+- `rating-desc` (default)
+- `price-asc`
+- `price-desc`
+
+**Comportamiento con parámetros inválidos:**
+- Categorías inválidas: Se ignoran
+- Parámetros vacíos: Se eliminan de la URL
+- Parámetros duplicados: Se utiliza el primer valor
 
 **Ejemplo de URL:**
 ```
-/experiences?search=beach&category=Adventure&destination=Hawaii
+/experiences?search=beach&category=Adventure&destination=Hawaii&page=2&sort=price-asc
 ```
 
 **Comportamiento esperado:**
@@ -279,6 +321,7 @@ resultados = experiencias
 - Los parámetros se actualizan automáticamente cuando el usuario modifica búsqueda o filtros
 - Los parámetros se eliminan de la URL cuando se limpian los filtros correspondientes
 - Todos los parámetros son opcionales
+- Al modificar búsqueda o filtros, la página se reinicia a 1
 
 ---
 
@@ -341,9 +384,9 @@ resultados = experiencias
 
 **Ubicación:** Componente root o layout principal  
 **Tipo:** `useState<string[]>([])`  
-**Contenido:** Array de IDs (strings) de experiencias marcadas como favoritos
-
-**Nota:** La arquitectura concreta del estado compartido (props, custom hook, Context API) se definirá en fases posteriores del proyecto.
+**Contenido:** Array de IDs (strings) de experiencias marcadas como favoritos  
+**Patrón:** Context API + Provider con useState interno  
+**Nota:** `useFavorites` es un hook complementario opcional, no sustituye la gestión de estado directa
 
 ---
 
@@ -468,6 +511,7 @@ src/
 - **TypeScript:** Tipado consistente
 - **Tailwind CSS:** Para estilos
 - **ESLint:** Configurado en el proyecto
+- **Context API y useState:** Para gestión de estado (favoritos)
 
 ### 10.2. Prohibiciones explícitas
 
@@ -478,96 +522,90 @@ src/
 | No utilizar localStorage | Fuera del alcance del MVP |
 | No utilizar otras librerías de gestión de estado | Mantener simplicidad |
 
-### 10.3. Requisitos obligatorios
+### 10.3. Requisitos de implementación
 
-- Mantener consistencia de tipado con TypeScript
-- Utilizar dataset local (`src/data/experiences.ts`)
-- Respetar arquitectura App Router de Next.js
-- Realizar navegación sin recargas completas de página
-- Componentes lógicamente divididos (no monolíticos)
-
----
-
-## 11. Criterios de aceptación verificables
-
-Los siguientes criterios permiten validar la implementación:
-
-### 11.1. Criterios de estructura
-
-- [ ] **Rutas:** Existen las 5 rutas requeridas: `/`, `/experiences`, `/experiences/[id]`, `/favorites`, `/profile`
-- [ ] **Componentes:** Existen al menos: Navbar, ExperienceCard, SearchBar, FilterBar
-- [ ] **Dataset:** Archivo `src/data/experiences.ts` contiene 100 experiencias
-- [ ] **Tipado:** Interfaz `Experience` definida con los 8 campos obligatorios
-- [ ] **Organización:** Componentes divididos en carpetas lógicas (no monolíticos)
-
-### 11.2. Criterios de búsqueda y filtros
-
-- [ ] **Búsqueda por título:** La búsqueda filtra experiencias usando `/term/i` (regex case-insensitive)
-- [ ] **Filtro por categoría:** Las experiencias se filtran correctamente por categoría seleccionada
-- [ ] **Filtro por destino:** Las experiencias se filtran correctamente por destino seleccionado
-- [ ] **Combinación de filtros:** Búsqueda + categoría + destino funcionan juntos (AND lógico)
-- [ ] **Sin resultados:** Se muestra mensaje "No se encontraron resultados" cuando corresponde
-
-### 11.3. Criterios de URL y sincronización
-
-- [ ] **Query parameters:** `search`, `category`, `destination` aparecen en la URL de `/experiences`
-- [ ] **Lectura de parámetros:** Usar `useSearchParams` para leer parámetros
-- [ ] **Lectura de ruta:** Usar `usePathname` para identificar sección activa
-- [ ] **Prellenado:** Acceder a URL con parámetros prerrellena campos y muestra resultados filtrados
-- [ ] **Compartibilidad:** Copiar URL de búsqueda y abrirla en otra ventana reproduce la búsqueda
-
-### 11.4. Criterios de favoritos
-
-- [ ] **Almacenamiento:** Los favoritos se almacenan con `useState`
-- [ ] **Icono visual:** ExperienceCard muestra icono de corazón con estado visual (relleno/vacío)
-- [ ] **Persistencia:** El estado de favoritos se mantiene al navegar entre páginas
-- [ ] **Lista de favoritos:** `/favorites` muestra solo experiencias marcadas como favoritas
-- [ ] **Contador:** `/profile` muestra contador actualizado de favoritos
-
-### 11.5. Criterios de hooks y lógica
-
-- [ ] **useState:** Se utiliza correctamente para gestionar favoritos
-- [ ] **useEffect:** Se utiliza en al menos un componente con dependencias correctas
-- [ ] **Sin bucles infinitos:** useEffect no causa recargas infinitas
-- [ ] **Custom hook:** Existe al menos un custom hook encapsulando lógica significativa
-
-### 11.6. Criterios de UI/UX
-
-- [ ] **Navbar presente:** Navbar visible en todas las páginas
-- [ ] **Indicador activo:** usePathname resalta correctamente la sección activa
-- [ ] **Responsividad:** Interfaz funciona en dispositivos móviles y escritorio
-- [ ] **Coherencia visual:** Diseño consistente entre páginas
-
-### 11.7. Criterios de código
-
-- [ ] **TypeScript:** Tipos e interfaces utilizados consistentemente
-- [ ] **Sin Redux:** No hay dependencias de Redux
-- [ ] **Sin Zustand:** No hay dependencias de Zustand
-- [ ] **Sin localStorage:** No se utiliza localStorage (fuera del alcance)
-- [ ] **Commits:** Cambios registrados en Git con mensajes descriptivos
-
-### 11.8. Criterios de documentación
-
-- [ ] **Design References:** README.md documenta 2-3 referencias de diseño reales
+- **State Management:** Context API + Provider con useState interno
+- **Props:** Transmitir props necesarias a componentes reutilizables
+- **Custom hooks:** Mantener obligatorio custom hook de filtrado
+- **useFavorites:** Hook complementario (no obligatorio como requerimiento independiente)
+- **Directorio de hooks:** `src/hooks/`
+- **Directorio de componentes:** `src/components/`
+- **Validación de dataset:** Validar 100 registros durante desarrollo, sin mecanismos adicionales en cada carga
 
 ---
 
-## 12. Decisiones pendientes y supuestos
+## 11. Matriz de validación
 
-### 12.1. Decisiones resueltas en esta revisión
+| ID | Requisito | Método de validación | Resultado esperado | Estado |
+|----|-----------|--------------------|------------------|--------|
+| **R-001** | Rutas existentes | Verificar existencia de archivos | Existen 5 rutas (/, /experiences, /experiences/[id], /favorites, /profile) | Pendiente |
+| **R-002** | Componentes base | Verificar archivos de componentes | Existen: Navbar, ExperienceCard, SearchBar, FilterBar | Pendiente |
+| **R-003** | Dataset | Verificar `src/data/experiences.ts` | Array con 100 objetos Experience | Pendiente |
+| **R-004** | Interfaz Experience | Verificar tipos TypeScript | Interfaz con 8 campos (id, title, description, category, destination, price, rating, imageUrl) | Pendiente |
+| **R-005** | Búsqueda por título | Input de texto, verificar filtrado | Se filtra por regex case-insensitive e insensible a acentos con escape de caracteres | Pendiente |
+| **R-006** | Filtro por categoría | Select de categoría, verificar filtrado | Se filtra por una sola categoría (single-select) | Pendiente |
+| **R-007** | Filtro por destino | Input de destino, verificar filtrado | Se filtra por coincidencia parcial, case-insensitive | Pendiente |
+| **R-008** | Combinación de filtros | Aplicar múltiples filtros | Resultados muestran intersección (AND lógico) | Pendiente |
+| **R-009** | Ordenamiento | Verificar orden de resultados | Default: rating descendente; soporta precio asc/desc; empates por título alfabético | Pendiente |
+| **R-010** | Paginación | Verificar controles de página | 12 experiencias por página; reinicia a página 1 al cambiar filtros | Pendiente |
+| **R-011** | URL parameters | Acceder con parámetros en URL | search, category, destination, page, sort sincronizados | Pendiente |
+| **R-012** | URL sincronización | Cambiar filtros, verificar URL | URL se actualiza automáticamente al cambiar filtros | Pendiente |
+| **R-013** | URL prellenado | Acceder con parámetros | Campos se prerrellanan y resultados se muestran filtrados | Pendiente |
+| **R-014** | Sin resultados | Buscar sin coincidencias | Muestra mensaje exacto: "No se encontraron resultados" | Pendiente |
+| **R-015** | Favoritos storage | Verificar estado | useState<string[]> gestiona IDs de favoritos | Pendiente |
+| **R-016** | Icono favorito | Click en corazón | Añade/elimina de favoritos y actualiza UI (relleno/vacío) | Pendiente |
+| **R-017** | Favoritos persistencia | Navegar entre páginas | Favoritos se mantienen durante navegación | Pendiente |
+| **R-018** | Página /favorites | Acceder a /favorites | Muestra solo experiencias marcadas como favoritas | Pendiente |
+| **R-019** | Perfil simulado | Acceder a /profile | Muestra atributos: id, firstName, lastName, email, avatarUrl, city, country | Pendiente |
+| **R-020** | Contador dinámico | Cambiar favoritos | Contador en /profile se actualiza automáticamente | Pendiente |
+| **R-021** | Navbar en todas páginas | Verificar visibilidad | Navbar presente en todas las 5 rutas | Pendiente |
+| **R-022** | Indicador activo | Navegar entre páginas | usePathname resalta correctamente la sección activa | Pendiente |
+| **R-023** | Enlace regresar | Acceder a /experiences/[id] | Existe enlace/botón visible para regresar a /experiences | Pendiente |
+| **R-024** | Error 404 | Acceder a ID inexistente | Muestra página de error 404 personalizada con Navbar y enlace a explorador | Pendiente |
+| **R-025** | Parámetros inválidos | URL con categoría inválida | Se ignoran parámetros inválidos | Pendiente |
+| **R-026** | Parámetros vacíos | URL con parámetro vacío | Se eliminan parámetros vacíos | Pendiente |
+| **R-027** | Parámetros duplicados | URL con parámetro duplicado | Se utiliza primer valor | Pendiente |
+| **R-028** | useState uso | Buscar en código | Se utiliza para gestionar favoritos | Pendiente |
+| **R-029** | useEffect uso | Buscar en código | Se utiliza en al menos 1 componente con dependencias correctas | Pendiente |
+| **R-030** | useEffect sin loops | Verificar rendimiento | No hay recargas infinitas | Pendiente |
+| **R-031** | Custom hook filtrado | Verificar `useFilters` | Existe hook encapsulando lógica de búsqueda y filtrado | Pendiente |
+| **R-032** | useSearchParams | Verificar importación | Se utiliza para leer parámetros de URL | Pendiente |
+| **R-033** | usePathname | Verificar importación | Se utiliza para identificar sección activa | Pendiente |
+| **R-034** | TypeScript tipos | ESLint/TypeScript | Tipos utilizados consistentemente | Pendiente |
+| **R-035** | No Redux | Verificar dependencias | No hay importaciones de Redux | Pendiente |
+| **R-036** | No Zustand | Verificar dependencias | No hay importaciones de Zustand | Pendiente |
+| **R-037** | No localStorage | Verificar código | No se utiliza localStorage | Pendiente |
+| **R-038** | Responsividad mobile | Verificar en viewport 320px | Funciona sin desplazamiento horizontal innecesario | Pendiente |
+| **R-039** | Responsividad desktop | Verificar en viewport 1920px | Interfaz adapta correctamente a pantallas grandes | Pendiente |
+| **R-040** | Accesibilidad WCAG AA | Verificar atributos ARIA | 1.1.1: Alt texto en imágenes; 1.3.1: Semántica HTML; 1.4.1: No solo color; 1.4.3: Contraste 4.5:1 (texto normal), 3:1 (texto grande); 1.4.10: Adaptable a 320px sin scroll horizontal; 1.4.11: Contraste 3:1 en componentes; 2.1.1: Navegación teclado; 2.4.7: Foco visible; 2.5.8: Objetivos 24x24px mín; 3.3.2: Etiquetas accesibles en inputs; 4.1.2: Nombre/función/estado accesibles; 4.1.3: Cambios de resultados comunicados | Pendiente |
+| **R-041** | ExperienceCard | Verificar componente | Muestra información resumida + botón favorito + link a detalle | Pendiente |
+| **R-042** | Coherencia visual | Revisión visual | Diseño consistente entre páginas, referencias visuales (Airbnb, GetYourGuide, Civitatis) | Pendiente |
+| **R-043** | Escape caracteres | Verificar regex | Caracteres especiales se escapan antes de construir RegExp | Pendiente |
+| **R-044** | Context API | Verificar Provider | Se utiliza Context API para compartir estado de favoritos | Pendiente |
+| **R-045** | Búsqueda sin debouncing | Verificar comportamiento | Búsqueda se actualiza inmediatamente sin debouncing | Pendiente |
+
+---
+
+## 12. Decisiones aprobadas y requisitos finalizados
+
+### 12.1. Decisiones resueltas en esta revisión v1.2
 
 Todas las decisiones clave han sido resueltas mediante aprobación de producto:
 
 | Decisión | Resolución |
 |----------|-----------|
-| **Filtro de categoría múltiple** | ✓ Single-select (una sola categoría) |
-| **Filtro de destino múltiple** | ✓ Single-select (una solo destino) |
-| **Búsqueda de destino** | ✓ Case-insensitive con coincidencia parcial |
-| **Actualización de URL** | ✓ Automática al cambiar filtros (sin botón "Buscar") |
-| **Error en /experiences/[id]** | ✓ Mostrar página de error 404 |
-| **Escape de caracteres especiales** | ✓ Escape obligatorio antes de construir RegExp |
-| **Mensaje sin resultados** | ✓ Exactamente: "No se encontraron resultados" |
-| **Navbar en todas las páginas** | ✓ Requisito explícito (no inferido) |
+| **Paginación** | ✓ 12 experiencias por página, parámetro `page` en URL |
+| **Ordenamiento** | ✓ Default: rating descendente; soporta precio asc/desc |
+| **Reinicio de página** | ✓ Vuelve a página 1 al modificar búsqueda o filtros |
+| **Parámetros inválidos** | ✓ Ignorar categorías inválidas, eliminar parámetros vacíos, usar primer valor duplicado |
+| **Perfil usuario** | ✓ Simulado con 7 atributos string, contador dinámico |
+| **Autenticación y edición** | ✓ No implementar |
+| **State Management** | ✓ Context API + useState (no Redux, no Zustand) |
+| **Accesibilidad** | ✓ Implementar criterios WCAG 2.2 AA especificados |
+| **Búsqueda sin debouncing** | ✓ No implementar debouncing en esta fase |
+| **Tailwind CSS** | ✓ Framework de estilos obligatorio |
+| **Validación dataset** | ✓ Validar 100 registros durante dev, sin mecanismos en cada carga |
+| **Referencias visuales** | ✓ Airbnb Experiences, GetYourGuide, Civitatis |
 
 ### 12.2. Supuestos confirmados
 
@@ -579,16 +617,33 @@ Todas las decisiones clave han sido resueltas mediante aprobación de producto:
 | Navbar está en un layout compartido | ✓ Buena práctica | Bajo |
 | Favoritos: tipo `string[]` | ✓ IDs de tipo string | Bajo |
 | URL es fuente de verdad | ✓ Parámetros reflejan estado | Medio |
+| Orden de operaciones | ✓ Filtrado → Ordenamiento → Paginación | Bajo |
 
-### 12.3. Decisiones arquitectónicas pendientes
+### 12.3. Requisitos finalizados
 
-Las siguientes decisiones se tomarán en fases posteriores:
+Los siguientes requisitos están completamente definidos:
 
-| Decisión | Opciones | Momento de decisión |
-|----------|----------|-------------------|
-| **Implementación de estado compartido** | Props drilling, Context API, o custom hooks | Fase: Definición de arquitectura de estado |
-| **Ubicación exacta del layout con Navbar** | Root layout o layout compartida de /experiences | Fase: Inicialización de Next.js |
-| **Estructura exacta de directorios** | Flexible, respetando estructura sugerida | Fase: Inicialización de Next.js |
+✓ Rutas y navegación (5 rutas)  
+✓ Paginación (12 por página, parámetro `page`)  
+✓ Ordenamiento (default rating desc, soporta precio asc/desc)  
+✓ Modelo de datos (8 campos obligatorios, tipo `id: string`)  
+✓ Perfil usuario (7 campos string, contador dinámico, no editable)  
+✓ Búsqueda por título (regex case-insensitive, insensible a acentos, con escape)  
+✓ Filtro por categoría (single-select)  
+✓ Filtro por destino (coincidencia parcial, case-insensitive)  
+✓ Combinación de filtros (lógica AND)  
+✓ Sincronización con URL (parámetros: search, category, destination, page, sort)  
+✓ Actualización automática de URL  
+✓ Gestión de parámetros inválidos (ignorar, eliminar, usar primer valor)  
+✓ Gestión de favoritos (useState<string[]>)  
+✓ Componentes requeridos (Navbar, ExperienceCard, SearchBar, FilterBar)  
+✓ Hooks requeridos (useState, useEffect, custom hook de filtrado)  
+✓ State Management (Context API + Provider con useState)  
+✓ Restricciones técnicas (no Redux, no Zustand, no localStorage)  
+✓ Manejo de errores (error 404 cuando ID no existe, con contenido completo)  
+✓ Navbar en todas las páginas (requisito explícito)  
+✓ Accesibilidad (criterios WCAG 2.2 AA especificados)  
+✓ Tailwind CSS obligatorio  
 
 ---
 
@@ -596,45 +651,45 @@ Las siguientes decisiones se tomarán en fases posteriores:
 
 ### 13.1. Resumen de requisitos — Estado de completitud
 
-**Completamente definidos y resueltos:**
+**Completamente definidos en v1.2:**
 ✓ Rutas y navegación (5 rutas)  
-✓ Modelo de datos (8 campos obligatorios, tipo `id: string`)  
-✓ Búsqueda por título (regex case-insensitive con escape de caracteres especiales)  
+✓ Paginación (12 experiencias, parámetro `page`, reinicio en filtros)  
+✓ Ordenamiento (rating desc default, precio asc/desc, empates alfabéticos)  
+✓ Modelo de datos (8 campos, tipo `id: string`)  
+✓ Perfil usuario (7 campos string, contador dinámico, no editable)  
+✓ Búsqueda por título (regex case-insensitive, insensible a acentos, con escape)  
 ✓ Filtro por categoría (single-select)  
 ✓ Filtro por destino (coincidencia parcial, case-insensitive)  
-✓ Combinación de filtros (lógica AND)  
-✓ Sincronización con URL (query parameters: search, category, destination)  
-✓ Actualización automática de URL  
-✓ Gestión de favoritos (useState, tipo `string[]`)  
+✓ Combinación de filtros (lógica AND, orden: filtrado → ordenamiento → paginación)  
+✓ Sincronización con URL (parámetros: search, category, destination, page, sort)  
+✓ Manejo de parámetros (ignorar inválidos, eliminar vacíos, primer valor duplicado)  
+✓ Gestión de favoritos (useState<string[]>, Context API)  
 ✓ Componentes requeridos (Navbar, ExperienceCard, SearchBar, FilterBar)  
-✓ Hooks requeridos (useState, useEffect, custom hook de filtrado)  
-✓ Restricciones técnicas (no Redux, no Zustand, no localStorage)  
-✓ Manejo de errores (error 404 cuando ID no existe)  
-✓ Navbar en todas las páginas (requisito explícito)  
+✓ Hooks requeridos (useState, useEffect, custom hook filtrado)  
+✓ State Management (Context API + Provider, no Redux/Zustand)  
+✓ Restricciones técnicas (no localStorage, Tailwind CSS obligatorio)  
+✓ Errores (404 personalizada con contenido)  
+✓ Accesibilidad (WCAG 2.2 AA especificados)  
 
-**Parcialmente definidos (decisiones arquitectónicas posteriores):**
-~ Implementación específica de estado compartido (props, Context, custom hooks)  
-~ Ubicación exacta de componentes en la estructura de directorios  
+### 13.2. Cambios en esta revisión v1.2
 
-**Requisitos cerrados:** No hay decisiones pendientes sobre requisitos funcionales
-
-### 13.2. Cambios en esta revisión v1.1
-
-**Cambios realizados:**
-1. Actualizado tipo `id` a `string` (exclusivamente)
-2. Eliminadas propuestas de atributos adicionales (duration, participants, reviews, language, difficulty)
-3. Especificadas reglas de escape de caracteres en regex
-4. Definido filtro de categoría como single-select
-5. Definido filtro de destino con coincidencia parcial case-insensitive
-6. Confirmada actualización automática de URL sin botón de búsqueda
-7. Especificado mensaje exacto "No se encontraron resultados"
-8. Cambio de favoritos a tipo `string[]`
-9. Separación clara de custom hook de filtrado vs. `useFavorites`
-10. Cambio de Navbar a requisito explícito
-11. Especificado error 404 para IDs no existentes
-12. Especificada presencia de enlace para regresar en /experiences/[id]
-13. Eliminadas todas las decisiones pendientes resueltas
-14. Versionado a 1.1
+**Decisiones de producto aprobadas:**
+1. Paginación: 12 experiencias por página con parámetro `page`
+2. Ordenamiento: Rating descendente default, opciones de precio asc/desc
+3. Reinicio de página: A 1 cuando cambian búsqueda o filtros
+4. Perfil usuario: Atributos específicos (id, firstName, lastName, email, avatarUrl, city, country)
+5. State Management: Context API + Provider con useState confirmado
+6. Búsqueda: Insensible a acentos (normalización Unicode), sin debouncing
+7. Filtro destino: Insensible a acentos (normalización Unicode)
+8. Parámetros URL: Gestión de inválidos, vacíos y duplicados
+9. useFavorites: Hook complementario opcional, no obligatorio como requerimiento independiente
+10. Accesibilidad: Doce criterios WCAG 2.2 AA incorporados
+5. Parámetros URL: Incluir `page` y `sort`
+6. Gestión de errores: Ignorar categorías inválidas, eliminar vacíos, usar primer duplicado
+7. State Management: Context API confirmado como patrón
+8. Accesibilidad: Criterios WCAG 2.2 AA específicos incluidos
+9. Sin debouncing: No implementar en esta fase
+10. Matriz de validación: Reemplazada con tabla única concisa (45 requisitos)
 
 ---
 
@@ -677,6 +732,6 @@ Una vez aprobada esta especificación, el proyecto seguirá las siguientes fases
 ---
 
 **Documento generado como parte de Spec-Driven Development (SDD)**  
-**Versión:** 1.1  
+**Versión:** 1.2  
 **Última actualización:** 2026-11-25  
 **Estado:** Aprobado y listo para implementación
